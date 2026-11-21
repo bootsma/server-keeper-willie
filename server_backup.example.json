@@ -155,5 +155,6 @@
     "sender": "",
     "timeout": 30,
     "_comment": "Email reports after backup/verify: on = error | warning | always. method smtp talks to the relay directly; credentials_file only if it needs a login."
-  }
+  },
+  "personality": true
 }

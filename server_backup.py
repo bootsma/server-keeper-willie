@@ -72,6 +72,7 @@ import json
 import logging
 import os
 import pwd
+import random
 import re
 import secrets
 import shutil
@@ -91,7 +92,7 @@ from email.utils import formatdate, make_msgid
 from pathlib import Path
 from typing import Callable, Dict, Iterator, List, Optional, Tuple
 
-__version__ = "2.2.1"
+__version__ = "2.3.0"
 
 DEFAULT_CONFIG = Path("/etc/server-backup/config.json")
 LEGACY_CONFIG = Path("/etc/luks-backup/config.json")
@@ -136,6 +137,30 @@ CIFS_HINTS = [
 
 # module names; tuple order = run order (small/fast first, the big vzdump last)
 MODULE_ORDER = ("luks", "proxmox_host", "files", "proxmox_vm")
+# Groundskeeper-style sign-off, printed only after a clean run in a terminal (never in errors,
+# warnings, logs, JSON or email). "personality": false in the config turns it off.
+WILLIE_LINES = {
+    "backup": [
+        "Backups are in. Willie's away tae his shed.",
+        "Every byte tucked in tight. Nae varmint's gettin' at that.",
+        "Done. Drop the whole rack doon a well an' ye'd still sleep tonight.",
+        "That's the lot. A grand wee backup, if I say so masel'.",
+    ],
+    "verify": [
+        "Counted 'em twice. Nothin' missin', nothin' meddled wi'.",
+        "Nae tamperin', nae rot. The sheds are locked tight.",
+        "All present an' correct. Willie's satisfied, an' that's rare.",
+    ],
+    "restore-test": [
+        "Restored an' it works. The proof's in the porridge.",
+        "A backup ye've never restored is just a rumour. This one's real.",
+    ],
+    "gpg-test": ["Key turns, lock opens. Now dinnae go losin' it."],
+    "status": ["All quiet on the grounds.", "Grounds are tidy. Nothin' needs rakin'."],
+    "": ["Job done. Back tae the tractor."],
+}
+VERSION_TAGLINE = "Nae backup, nae mercy."
+
 MODULE_FLAGS = {"luks": "--luks", "files": "--files", "proxmox_vm": "--proxmox-vm", "proxmox_host": "--proxmox-host"}
 DEFAULT_SCHEDULES = {                     # systemd OnCalendar per profile; "verify" = scheduled verify --deep
     "daily": "Mon..Sat *-*-* 01:30",
@@ -385,6 +410,7 @@ class Config:
     disk_error_percent: int = 97          # ... and this: error
     disk_check_paths: List[str] = field(default_factory=list)   # extra mount points to watch
     notify: NotifyConfig = field(default_factory=NotifyConfig)
+    personality: bool = True              # sign-off line after clean interactive runs (see WILLIE_LINES)
 
     @classmethod
     def from_dict(cls, d: dict) -> "Config":
@@ -5144,6 +5170,9 @@ examples
 email        notify.email + notify.smtp_host in the config; backup/verify mail a report when the result
              is at least notify.on (default: warning). --no-notify skips it for a manual run.
 
+willie       a sign-off line after a clean run in a terminal only (never in errors, logs, JSON or
+             email); "personality": false in the config turns it off
+
 exit codes   0 ok, 1 error (includes tamper findings), 2 warnings only, 130 interrupted
 files        /etc/server-backup/config.json   /var/lib/server-backup/ledger.json
              /var/log/server-backup.log       README.md for the full documentation
@@ -5153,6 +5182,8 @@ files        /etc/server-backup/config.json   /var/lib/server-backup/ledger.json
 def build_parser() -> argparse.ArgumentParser:
     ap = argparse.ArgumentParser(prog="server_backup.py", description=HELP_DESCRIPTION, epilog=HELP_EPILOG,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("-V", "--version", action="version",
+                    version=f'server_backup.py {__version__} - "{VERSION_TAGLINE}"')
     ap.add_argument("command", nargs="?", default="status", choices=COMMANDS, metavar="command",
                     help="see 'commands' below (default: status)")
     ap.add_argument("-c", "--config", default=str(DEFAULT_CONFIG), metavar="FILE",
@@ -5263,6 +5294,17 @@ def _print_luks_device(out, d: dict, indent: str = "  ") -> None:
         out.write(f"{indent}    ! {w}\n")
     for e in d["errors"]:
         out.write(f"{indent}    X {e}\n")
+
+
+def willie_line(action: str, rng=random) -> str:
+    return rng.choice(WILLIE_LINES.get(action) or WILLIE_LINES[""])
+
+
+def willie_signoff(cfg: "Config", action: str, clean: bool, out=None) -> None:
+    """One sign-off line, only when the run was clean and a person is watching a terminal."""
+    out = out or sys.stdout
+    if cfg.personality and clean and out.isatty():
+        out.write(f"\n  ~ {willie_line(action)}\n")
 
 
 def print_run_human(rep: RunReport, out=None) -> None:
@@ -5509,6 +5551,8 @@ def main(argv: Optional[List[str]] = None) -> int:
         if a.command == "status":
             st = sb.status(quick=a.quick)
             print(json.dumps(st, indent=2, default=str)) if a.json else print_status_human(st)
+            if not a.json:
+                willie_signoff(cfg, "status", not st["errors"] and not st["warnings"])
             return EXIT_ERROR if st["errors"] else (EXIT_WARN if st["warnings"] else EXIT_OK)
 
         if a.command == "discover":
@@ -5586,6 +5630,8 @@ def main(argv: Optional[List[str]] = None) -> int:
             rrep = sb.run(a.command, mods, profile=a.profile or "", vmids=a.vmid, deep=a.deep,
                           luks_opts=luks_opts, notes=notes, wait_lock=a.wait_lock)
         print(json.dumps(rrep.to_dict(), indent=2)) if a.json else print_run_human(rrep)
+        if not a.json:
+            willie_signoff(cfg, a.command if a.command in WILLIE_LINES else "", rrep.status == "ok")
         if notifier:
             err = notifier.report(rrep)
             if err:

@@ -64,7 +64,7 @@ Do this once per machine before relying on the timers. Each step says what a pas
 | # | command | pass looks like |
 |---|---|---|
 | 0 | **OS-only backups:** mark each data disk `backup=0` in Proxmox and list it in `excluded_disks_ok` ([how](#os-only-vm-backups)). Check with `qm config <vmid> \| grep -E '^(scsi\|virtio\|sata)[0-9]'` | every data-disk line contains `backup=0` (Proxmox sorts the options, so it's often mid-line); the OS-disk line doesn't |
-| 1 | `server_backup.py status` | `server_backup 2.2.1` on the first line, destination `OK`, both VMs listed with only their OS disk size, notes `… excluded as planned`, no `X` lines |
+| 1 | `server_backup.py status` | `server_backup 2.3.0` on the first line, destination `OK`, both VMs listed with only their OS disk size, notes `… excluded as planned`, no `X` lines |
 | 2 | `server_backup.py notify-test` | the test email arrives |
 | 3 | `server_backup.py backup --proxmox-host` | `proxmox_host OK`; a `<ts>.tar.gpg` appears in `proxmox/host/` |
 | 4 | `server_backup.py gpg-test` (paste the key from Vaultwarden, or `--key-file`) | `passphrase OK` and `… files match SHA256SUMS` |
@@ -150,6 +150,7 @@ twice. Secrets live in separate files: `cifs.credentials_file`, `files.password_
 | `state_dir` | `/var/lib/server-backup` | holds the tamper ledger |
 | `notify.*` | off | email reports, see [Email reports](#email-reports) |
 | `disk_warn_percent`, `disk_error_percent`, `disk_check_paths` | `90`, `97`, `[]` | see [Disk usage](#disk-usage) |
+| `personality` | `true` | one sign-off line after a clean run in a terminal; never in errors, logs, JSON or email |
 | `profiles`, `schedules` | daily/weekly/recovery | see [Profiles, schedules and retention](#profiles-schedules-and-retention) |
 | `files.paths` | `[]` | absolute paths; nothing is backed up unless listed |
 | `files.repository` | `""` | `""` = on the share; or any restic repository URL |
@@ -417,6 +418,9 @@ hand later. Without a command the tool now shows `status`; `run` keeps the old b
 
 The first line of `status` shows the installed version.
 
+- **2.3.0** A groundskeeper sign-off line after a clean `backup`, `verify`, `restore-test`,
+  `gpg-test` or `status` in a terminal. Never in errors, warnings, logs, JSON or email;
+  `"personality": false` turns it off. `--version` / `-V`.
 - **2.2.1** Progress for vzdump, qmrestore (`restore-test`) and restic backups, about every 30 s,
   without needing `-v`. Previously these steps were silent for minutes.
 - **2.2.0**

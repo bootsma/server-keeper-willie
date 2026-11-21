@@ -983,6 +983,40 @@ class TestBackupKey(unittest.TestCase):
         self.assertEqual(len(sb.key_export_files(d, "0123456789ABCDEF0123456789ABCDEF89ABCDEF")), 2)
 
 
+class FakeTty(io.StringIO):
+    def __init__(self, tty):
+        super().__init__()
+        self.tty = tty
+
+    def isatty(self):
+        return self.tty
+
+
+class TestWillie(unittest.TestCase):
+    def test_signoff_only_when_clean_in_a_terminal_and_enabled(self):
+        cfg = sb.Config()
+        for clean, tty, on, shown in ((True, True, True, True), (False, True, True, False),
+                                      (True, False, True, False), (True, True, False, False)):
+            cfg.personality = on
+            out = FakeTty(tty)
+            sb.willie_signoff(cfg, "backup", clean, out)
+            self.assertEqual(bool(out.getvalue()), shown, (clean, tty, on))
+        out = FakeTty(True)
+        cfg.personality = True
+        sb.willie_signoff(cfg, "verify", True, out)
+        self.assertIn(out.getvalue().strip()[2:], sb.WILLIE_LINES["verify"])
+
+    def test_unknown_action_uses_generic_line_and_config_switch_loads(self):
+        self.assertIn(sb.willie_line("files-init"), sb.WILLIE_LINES[""])
+        self.assertFalse(sb.Config.from_dict({"personality": False}).personality)
+        self.assertEqual(sb.Config.from_dict({"personality": False}).load_problems, [])
+
+    def test_version_flag(self):
+        with redirect_stdout(io.StringIO()) as out, self.assertRaises(SystemExit):
+            sb.main(["--version"])
+        self.assertIn(sb.__version__, out.getvalue())
+
+
 class TestCli(unittest.TestCase):
     def test_example_config_and_units(self):
         with redirect_stdout(io.StringIO()) as out:
