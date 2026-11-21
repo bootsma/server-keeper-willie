@@ -1,0 +1,10 @@
+#!/usr/bin/env python3
+import os, sys
+S = os.environ["FAKE_STATE"]
+a = sys.argv[1:]
+open(os.path.join(S, "qmrestore-args"), "w").write(" ".join(a))
+if not os.path.isfile(a[0]):
+    sys.exit(1)
+open(os.path.join(S, f"vm-{a[1]}"), "w").write("restored")
+print(f"restore vma archive: {a[0]}")
+print("progress 35% (read 96619904000 bytes, duration 120 sec)")

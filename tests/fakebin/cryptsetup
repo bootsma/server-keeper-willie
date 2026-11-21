@@ -1,0 +1,3 @@
+#!/bin/sh
+[ "$1" = "--version" ] && { echo "cryptsetup 2.7.0 flags: UDEV BLKID"; exit 0; }
+exit 1

@@ -1,0 +1,48 @@
+#!/usr/bin/env python3
+"""Fake `qm`: VM 101 'web' running with agent, VM 102 'db' stopped; restored test VMs live in $FAKE_STATE."""
+import os, sys
+S = os.environ["FAKE_STATE"]
+VMS = {"101": ("web", "running", "agent: 1\n"), "102": ("db", "stopped", "")}
+a = sys.argv[1:]
+
+
+def restored(vid):
+    return os.path.exists(os.path.join(S, f"vm-{vid}"))
+
+
+def config(vid, name, extra=""):
+    return (f"boot: order=scsi0\ncores: 2\nmemory: 2048\nname: {name}\n"
+            "net0: virtio=AA:BB:CC:DD:EE:FF,bridge=vmbr0\n"
+            f"scsi0: local-lvm:vm-{vid}-disk-0,size=1M\n"
+            f"scsi1: local-lvm:vm-{vid}-disk-1,backup=0,size=2M\n"
+            "ide2: none,media=cdrom\n" + extra)
+
+
+if a[0] == "list":
+    print("      VMID NAME                 STATUS     MEM(MB)    BOOTDISK(GB) PID")
+    for vid, (name, st, _) in VMS.items():
+        print(f"       {vid} {name:<20} {st:<10} 2048       1.00         0")
+elif a[0] == "config":
+    if a[1] in VMS:
+        name, _, extra = VMS[a[1]]
+        sys.stdout.write(config(a[1], name, extra))
+    elif restored(a[1]):
+        sys.stdout.write(config(a[1], "restored", "hostpci0: 0000:49:00.0,pcie=1\nhugepages: 2\n"
+                                "affinity: 4-51\nnuma0: cpus=0-1,hostnodes=0,memory=2048,policy=bind\n"))
+    else:
+        sys.stderr.write(f"Configuration file 'nodes/pve/qemu-server/{a[1]}.conf' does not exist\n")
+        sys.exit(2)
+elif a[0] == "status":
+    if a[1] in VMS:
+        print(f"status: {VMS[a[1]][1]}")
+    elif restored(a[1]):
+        print("status: stopped")
+    else:
+        sys.exit(2)
+elif a[0] == "guest":
+    sys.exit(0)
+elif a[0] == "set":
+    with open(os.path.join(S, f"qm-set-{a[1]}"), "w") as f:
+        f.write(" ".join(a[2:]))
+else:
+    sys.exit(1)

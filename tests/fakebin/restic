@@ -1,0 +1,89 @@
+#!/usr/bin/env python3
+"""Minimal fake restic: a JSON 'repository' with file copies, enough for orchestration tests."""
+import datetime, hashlib, json, os, shutil, sys
+S = os.environ["FAKE_STATE"]
+repo = os.environ["RESTIC_REPOSITORY"]
+pw = hashlib.sha256(open(os.environ["RESTIC_PASSWORD_FILE"], "rb").read()).hexdigest()
+a = sys.argv[1:]
+cmd = a[0]
+
+
+def opts(name):
+    return [a[i + 1] for i, x in enumerate(a) if x == name]
+
+
+cfgp, snp = os.path.join(repo, "config"), os.path.join(repo, "snapshots.json")
+if cmd == "init":
+    if os.path.exists(cfgp):
+        sys.exit(1)
+    os.makedirs(repo, exist_ok=True)
+    json.dump({"pw": pw, "id": hashlib.sha256(os.urandom(8)).hexdigest()}, open(cfgp, "w"))
+    json.dump([], open(snp, "w"))
+    print(f"created restic repository at {repo}")
+    sys.exit(0)
+if not os.path.exists(cfgp):
+    sys.stderr.write(f"Fatal: repository does not exist: unable to open config file: stat {cfgp}\n")
+    sys.exit(10)
+if json.load(open(cfgp))["pw"] != pw:
+    sys.stderr.write("Fatal: wrong password or no key found\n")
+    sys.exit(12)
+snaps = json.load(open(snp))
+if cmd == "cat":
+    print(json.dumps({"version": 2, "id": json.load(open(cfgp)).get("id", "")}))
+elif cmd in ("unlock", "check"):
+    print("no errors were found" if cmd == "check" else "")
+elif cmd == "backup":
+    open(os.path.join(S, "restic-backup-args"), "w").write(" ".join(a))
+    paths = a[a.index("--") + 1:]
+    size = (opts("--exclude-larger-than") or ["0"])[0].upper()
+    limit = int(size.rstrip("KMGT")) * 1024 ** (" KMGT".index(size[-1]) if size[-1] in "KMGT" else 0)
+    sid = hashlib.sha256(os.urandom(16)).hexdigest()
+    n = 0
+    for p in paths:
+        for root, _, files in os.walk(p):
+            for fn in files:
+                src = os.path.join(root, fn)
+                if limit and os.path.getsize(src) > limit:
+                    continue
+                dst = os.path.join(repo, "data", sid, src.lstrip("/"))
+                os.makedirs(os.path.dirname(dst), exist_ok=True)
+                shutil.copyfile(src, dst)
+                n += 1
+    now = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.123456789Z")
+    snaps.append({"id": sid, "short_id": sid[:8], "time": now, "host": opts("--host")[0],
+                  "tags": opts("--tag"), "paths": paths})
+    json.dump(snaps, open(snp, "w"))
+    print(json.dumps({"message_type": "status", "percent_done": 0.5, "total_bytes": 2048, "bytes_done": 1024, "files_done": 1}))
+    if os.environ.get("FAKE_RESTIC_RC3"):
+        print(json.dumps({"message_type": "error", "error": {"message": "permission denied"},
+                          "during": "archival", "item": "/secret"}))
+    print(json.dumps({"message_type": "summary", "files_new": n, "files_changed": 0, "data_added": 100,
+                      "total_files_processed": n, "total_bytes_processed": 200, "snapshot_id": sid}))
+    sys.exit(3 if os.environ.get("FAKE_RESTIC_RC3") else 0)
+elif cmd == "snapshots":
+    host, tags = opts("--host"), opts("--tag")
+    out = [s for s in snaps if (not host or s["host"] == host[0]) and all(t in s["tags"] for t in tags)]
+    if opts("--latest"):
+        out = out[-int(opts("--latest")[0]):]
+    print(json.dumps(out))
+elif cmd == "forget":
+    keep = sum(int(v) for k in ("--keep-last", "--keep-daily", "--keep-weekly", "--keep-monthly") for v in opts(k))
+    json.dump(snaps[-keep:] if keep else snaps, open(snp, "w"))
+    print("forget done")
+elif cmd == "ls":
+    sid, root = a[2], a[3]
+    print(json.dumps({"struct_type": "snapshot", "id": sid}))
+    base = os.path.join(repo, "data", sid)
+    for r, _, files in os.walk(os.path.join(base, root.lstrip("/"))):
+        for fn in sorted(files):
+            p = os.path.join(r, fn)
+            print(json.dumps({"struct_type": "node", "type": "file", "path": "/" + os.path.relpath(p, base),
+                              "size": os.path.getsize(p)}), flush=True)
+elif cmd == "restore":
+    sid, target, inc = a[1], opts("--target")[0], opts("--include")[0]
+    src = os.path.join(repo, "data", sid, inc.lstrip("/"))
+    dst = os.path.join(target, inc.lstrip("/"))
+    os.makedirs(os.path.dirname(dst), exist_ok=True)
+    (shutil.copytree if os.path.isdir(src) else shutil.copyfile)(src, dst)
+else:
+    sys.exit(1)

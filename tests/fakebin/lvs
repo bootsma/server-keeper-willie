@@ -1,0 +1,9 @@
+#!/usr/bin/env python3
+"""Fake lvs --reportformat json: two thin pools (FAKE_THIN_DATA overrides one)."""
+import json, os
+pools = [("pve", "data", os.environ.get("FAKE_THIN_DATA", "69.17"), "3.25"),
+         ("data_vg", "data", "76.25", "42.94")]
+lv = [{"vg_name": vg, "lv_name": n, "lv_attr": "twi-aotz--", "data_percent": d, "metadata_percent": m}
+      for vg, n, d, m in pools]
+lv.append({"vg_name": "pve", "lv_name": "root", "lv_attr": "-wi-ao----", "data_percent": "", "metadata_percent": ""})
+print(json.dumps({"report": [{"lv": lv}]}))

@@ -1,0 +1,23 @@
+#!/usr/bin/env python3
+"""Fake vzdump: writes vzdump-qemu-<id>-<ts>.vma.zst + .log into --dumpdir; FAKE_VZDUMP_FAIL=1 fails mid-way."""
+import os, sys
+S = os.environ["FAKE_STATE"]
+a = sys.argv[1:]
+with open(os.path.join(S, "vzdump-args"), "w") as f:
+    f.write(" ".join(a))
+vmid, dumpdir = a[0], a[a.index("--dumpdir") + 1]
+cnt = os.path.join(S, "vzdump-counter")
+n = int(open(cnt).read()) + 1 if os.path.exists(cnt) else 1
+open(cnt, "w").write(str(n))
+stem = os.path.join(dumpdir, f"vzdump-qemu-{vmid}-2026_01_01-00_{n // 60:02d}_{n % 60:02d}")
+with open(stem + ".log", "w") as f:
+    f.write(f"INFO: starting new backup job: vzdump {vmid}\n")
+print(f"INFO: Starting Backup of VM {vmid} (qemu)")
+if os.environ.get("FAKE_VZDUMP_FAIL"):
+    open(stem + ".vma.dat", "wb").write(b"partial")
+    print("ERROR: Backup of VM failed - fake failure")
+    sys.exit(1)
+print("INFO:  50% (128.0 GiB of 256.0 GiB) in 3m 20s, read: 1.0 GiB/s, write: 100 MiB/s")
+print("INFO: 100% (256.0 GiB of 256.0 GiB) in 6m 41s, read: 12.0 GiB/s, write: 488.0 KiB/s")
+open(stem + ".vma.zst", "wb").write(os.urandom(4096))
+print(f"INFO: Finished Backup of VM {vmid} (00:00:01)")

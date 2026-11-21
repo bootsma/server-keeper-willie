@@ -1,0 +1,20 @@
+# Real per-machine config and anything secret: never commit
+server_backup.json
+*.cred
+*.credentials
+*.asc
+*.gpg
+*.key
+*.pem
+luks-backup-key-*
+server-backup-key-*
+restic-password*
+
+# Python / editors
+__pycache__/
+*.pyc
+.pytest_cache/
+.venv/
+.vscode/
+.idea/
+*.swp

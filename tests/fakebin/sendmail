@@ -1,0 +1,3 @@
+#!/bin/sh
+# Fake sendmail -t: store the message
+cat > "$FAKE_STATE/sendmail-message"

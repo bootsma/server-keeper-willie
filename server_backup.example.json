@@ -1,0 +1,159 @@
+{
+  "_comment": "server_backup.py config. Detection says what CAN run; 'enabled' says what SHOULD. Secrets live in separate files (cifs.credentials_file, modules.files.password_file).",
+  "hostname": "",
+  "local_dir": "/var/backups/server-backup",
+  "keep_local": true,
+  "retention": 8,
+  "keyfile_globs": [
+    "/root/*.key",
+    "/root/.*key*",
+    "/root/*keyfile*",
+    "/etc/luks-keys/*",
+    "/etc/keys/*",
+    "/etc/cryptsetup-keys.d/*"
+  ],
+  "gpg_recipient": "",
+  "gpg_home": "/etc/server-backup/gnupg",
+  "log_file": "/var/log/server-backup.log",
+  "state_dir": "/var/lib/server-backup",
+  "cifs": {
+    "enabled": true,
+    "share": "//nas.example.lan/backups",
+    "subdir": "serverBackup",
+    "credentials_file": "/etc/server-backup/cifs.cred",
+    "mount_options": "vers=3,seal",
+    "min_free_gb": 5.0,
+    "marker_file": ""
+  },
+  "devices": {},
+  "modules": {
+    "luks": {
+      "enabled": true,
+      "stale_after_days": 35
+    },
+    "files": {
+      "enabled": true,
+      "repository": "",
+      "password_file": "/etc/server-backup/restic.pass",
+      "env_file": "",
+      "cache_dir": "/var/cache/server-backup/restic",
+      "paths": [
+        "/home/user",
+        "/mnt/local-data/project",
+        "/mnt/local-data-hdd/project"
+      ],
+      "excludes": [],
+      "exclude_files": [],
+      "exclude_caches": false,
+      "one_file_system": false,
+      "allow_missing_paths": false,
+      "max_file_size": "",
+      "large_file_action": "warn",
+      "tags": [],
+      "keep_last": 0,
+      "keep_daily": 7,
+      "keep_weekly": 4,
+      "keep_monthly": 6,
+      "keep_yearly": 0,
+      "prune": true,
+      "check_after_backup": false,
+      "check_read_data_subset": "",
+      "extra_backup_args": [],
+      "timeout_hours": 0,
+      "stale_after_days": 2
+    },
+    "proxmox_vm": {
+      "enabled": false,
+      "vmids": [
+        101,
+        102
+      ],
+      "excluded_disks_ok": {},
+      "mode": "snapshot",
+      "compress": "zstd",
+      "zstd_threads": 0,
+      "retention": 3,
+      "keep_daily": 0,
+      "keep_weekly": 0,
+      "keep_monthly": 0,
+      "bwlimit_kbps": 0,
+      "tmpdir": "",
+      "dumpdir": "",
+      "required_free_ratio": 1.0,
+      "checksum": true,
+      "verify_zstd": false,
+      "timeout_hours": 0,
+      "extra_args": [],
+      "stale_after_days": 8
+    },
+    "proxmox_host": {
+      "enabled": false,
+      "paths": [
+        "/etc/pve",
+        "/etc/network",
+        "/etc/hosts",
+        "/etc/hostname",
+        "/etc/fstab",
+        "/etc/crypttab",
+        "/etc/default/grub",
+        "/etc/modules*",
+        "/etc/modprobe.d",
+        "/etc/systemd/system",
+        "/etc/vzdump.conf",
+        "/etc/kernel",
+        "/etc/lvm/lvm.conf",
+        "/etc/resolv.conf",
+        "/etc/apt/sources.list",
+        "/etc/apt/sources.list.d"
+      ],
+      "extra_paths": [],
+      "excludes": [],
+      "include_config_db": true,
+      "extra_commands": {},
+      "retention": 8,
+      "keep_daily": 0,
+      "keep_weekly": 0,
+      "keep_monthly": 0,
+      "allow_unencrypted": false,
+      "stale_after_days": 8
+    },
+    "_comment": "On a Proxmox host set proxmox_vm.enabled/proxmox_host.enabled to true and list VM IDs explicitly; on a VM leave them false."
+  },
+  "profiles": {
+    "daily": [
+      "files"
+    ],
+    "weekly": [
+      "files",
+      "proxmox_vm",
+      "proxmox_host"
+    ],
+    "recovery": [
+      "luks"
+    ]
+  },
+  "schedules": {
+    "daily": "Mon..Sat *-*-* 01:30",
+    "weekly": "Sun *-*-* 01:30",
+    "recovery": "*-*-01 05:00",
+    "verify": "Wed *-1/2-15..21 03:00",
+    "_comment": "systemd OnCalendar per profile; 'verify' = scheduled verify --deep. systemd-units writes timers only for profiles with an enabled module."
+  },
+  "disk_warn_percent": 90,
+  "disk_error_percent": 97,
+  "disk_check_paths": [],
+  "notify": {
+    "email": [
+      "you@example.org"
+    ],
+    "on": "warning",
+    "method": "smtp",
+    "smtp_host": "smtp-relay.example.org",
+    "smtp_port": 587,
+    "security": "starttls",
+    "credentials_file": "",
+    "sender": "",
+    "timeout": 30,
+    "_comment": "Email reports after backup/verify: on = error | warning | always. method smtp talks to the relay directly; credentials_file only if it needs a login."
+  }
+}
