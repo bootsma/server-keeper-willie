@@ -415,6 +415,42 @@ Without `-c`, and with no `/etc/server-backup/config.json`, the tool imports
 `/etc/luks-backup/config.json`. LUKS backups move to `<host>/luks/`; delete old-layout backups by
 hand later. Without a command the tool now shows `status`; `run` keeps the old behaviour.
 
+### Uninstall
+
+Disable the timers **before** removing the script. If the script is gone, the timers keep firing
+on schedule and each run fails before `server_backup.py` starts, with `status=203/EXEC` in the
+journal. You get no email, because the email is sent by the script itself. The only signs are
+`systemctl --failed` and the journal.
+
+```bash
+# 1. stop the schedule (and any run in progress: it unmounts the share as it stops)
+systemctl disable --now 'server-backup-*.timer'
+systemctl stop 'server-backup*.service'
+
+# 2. remove the units
+rm -f /etc/systemd/system/server-backup@.service /etc/systemd/system/server-backup-*.timer \
+      /etc/systemd/system/server-backup-verify.service
+systemctl daemon-reload && systemctl reset-failed
+
+# 3. keep what you need to read the existing backups (if you haven't already)
+#    - /etc/server-backup/restic.pass: without it the Restic repository can't be opened
+#    - the backup encryption key is in Vaultwarden; /etc/server-backup/gnupg holds only the public half
+
+# 4. remove the script, config, credentials, state, cache, log and local copies
+rm -f /usr/local/sbin/server_backup.py /var/log/server-backup.log
+rm -rf /etc/server-backup /var/lib/server-backup /var/cache/server-backup /var/backups/server-backup
+
+# 5. nothing should be left mounted
+findmnt -t cifs | grep server-backup-cifs   # if listed: umount <that path>
+```
+
+- **Backups on the share are left alone.** They're under `<cifs.subdir>/<hostname>/`; delete them
+  by hand if you no longer want them.
+- **On a Proxmox host, the `backup=0` flags stay on the data disks.** Proxmox's own backup jobs
+  honour them too, so remove them with `qm set` if you go back to backing up whole VMs.
+- **Adjust the paths** if you installed the script elsewhere or changed `local_dir`, `log_file`,
+  `state_dir` or `files.cache_dir`. `systemctl cat server-backup@.service` shows the script path.
+
 ### What verify checks
 
 | | `verify` | `--deep` adds |
