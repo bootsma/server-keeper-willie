@@ -57,6 +57,7 @@ Exit codes: 0 ok, 1 error, 2 completed with warnings, 130 interrupted
 from __future__ import annotations
 
 import argparse
+import base64
 import collections
 import contextlib
 import dataclasses
@@ -92,7 +93,7 @@ from email.utils import formatdate, make_msgid
 from pathlib import Path
 from typing import Callable, Dict, Iterator, List, Optional, Tuple
 
-__version__ = "2.3.1"
+__version__ = "2.4.0"
 
 DEFAULT_CONFIG = Path("/etc/server-backup/config.json")
 LEGACY_CONFIG = Path("/etc/luks-backup/config.json")
@@ -5046,6 +5047,8 @@ SERVICE_TEMPLATE = """[Unit]
 Description=server_backup.py {what}
 Wants=network-online.target
 After=network-online.target
+# emails when the script could not report itself (missing, crashed, killed); see FAILURE_HANDLER
+OnFailure=server-backup-failure@%N.service
 
 [Service]
 Type=oneshot
@@ -5059,6 +5062,103 @@ TimeoutStartSec=infinity
 TimeoutStopSec=10min
 # exit 2 = completed with warnings; uncomment to not mark the unit failed for warnings only
 #SuccessExitStatus=2
+"""
+
+# Runs from OnFailure= and must work when server_backup.py is gone, so it is standalone
+# (stdlib only, reads the config's notify settings itself) and embedded in the unit as base64.
+# Exit 1/2 mean the script ran and sent its own report (per notify.on); everything else
+# (203/EXEC = script missing, 130 = interrupted, signals, timeouts) gets an email from here.
+FAILURE_HANDLER = r"""
+import json, smtplib, socket, ssl, subprocess, sys
+from email.message import EmailMessage
+from email.utils import formatdate, make_msgid
+
+cfg_path, unit = sys.argv[1], sys.argv[2]
+if not unit.endswith(".service"):
+    unit += ".service"
+
+
+def sh(args):
+    try:
+        return subprocess.run(args, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                              universal_newlines=True, timeout=60).stdout
+    except (OSError, subprocess.SubprocessError) as e:
+        return f"({args[0]}: {e})"
+
+
+props = dict(l.partition("=")[::2] for l in sh(["systemctl", "show", unit, "-p", "Result",
+                                                  "-p", "ExecMainCode", "-p", "ExecMainStatus"]).splitlines())
+result, code, status = props.get("Result", "?"), props.get("ExecMainCode", ""), props.get("ExecMainStatus", "")
+if result == "exit-code" and code == "1" and status in ("1", "2"):
+    print(f"{unit}: server_backup.py exited {status} and reported it itself; no email from here")
+    sys.exit(0)
+try:
+    with open(cfg_path) as f:
+        cfg = json.load(f)
+except (OSError, ValueError) as e:
+    print(f"{unit} failed ({result}, status {status}) and the config {cfg_path} is unreadable ({e}); no email")
+    sys.exit(1)
+n = cfg.get("notify") or {}
+to = [a for a in n.get("email") or [] if a]
+if not to:
+    print(f"{unit} failed ({result}, status {status}); notify.email is empty, no email")
+    sys.exit(0)
+host = cfg.get("hostname") or socket.gethostname()
+why = {"203": "the program could not be started: server_backup.py is missing, moved or not executable "
+              "(systemctl cat " + unit + " shows the path it expects)",
+       "130": "the run was interrupted (stopped or shut down mid-run)"}.get(status, "")
+if code in ("2", "3"):
+    why = f"server_backup.py was killed by signal {status}"
+if result == "timeout":
+    why = "systemd stopped the run after a timeout"
+msg = EmailMessage()
+msg["Subject"] = f"[server_backup] {host}: {unit} FAILED ({result})"
+msg["From"] = n.get("sender") or f"server-backup@{host}"
+msg["To"], msg["Date"], msg["Message-ID"] = ", ".join(to), formatdate(localtime=True), make_msgid(domain=host)
+msg.set_content(f"{unit} on {host} failed and server_backup.py could not send its own report.\n\n"
+                f"result: {result}   exit code/signal: {status}\n" + (f"likely cause: {why}\n" if why else "")
+                + f"\nLast journal lines (journalctl -u {unit}):\n\n"
+                + sh(["journalctl", "-u", unit, "-n", "40", "--no-pager", "-o", "short-iso"])
+                + "\n\nSent by the OnFailure handler of the systemd units written by "
+                  "server_backup.py systemd-units.\n")
+try:
+    if n.get("method", "smtp") == "sendmail":
+        rc = subprocess.run(["sendmail", "-t", "-oi"], input=msg.as_bytes(), timeout=n.get("timeout", 30)).returncode
+        if rc:
+            raise OSError(f"sendmail exited {rc}")
+    else:
+        user = pw = ""
+        if n.get("credentials_file"):
+            with open(n["credentials_file"]) as f:
+                for line in f:
+                    k, _, v = line.partition("=")
+                    k = k.strip().lower()
+                    if k in ("username", "user"):
+                        user = v.strip()
+                    elif k in ("password", "pass"):
+                        pw = v.strip()
+        sec = n.get("security", "starttls")
+        cls = smtplib.SMTP_SSL if sec == "ssl" else smtplib.SMTP
+        with cls(n.get("smtp_host", ""), n.get("smtp_port", 587), timeout=n.get("timeout", 30)) as smtp:
+            if sec == "starttls":
+                smtp.starttls(context=ssl.create_default_context())
+            if user:
+                smtp.login(user, pw)
+            smtp.send_message(msg)
+except (OSError, smtplib.SMTPException, ssl.SSLError, subprocess.SubprocessError) as e:
+    print(f"{unit} failed ({result}, status {status}); email to {', '.join(to)} failed: {e}")
+    sys.exit(1)
+print(f"{unit} failed ({result}, status {status}); emailed {', '.join(to)}")
+"""
+
+FAILURE_TEMPLATE = """[Unit]
+Description=server_backup.py: email that %i failed
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/env python3 -I -c "import base64,sys;exec(base64.b64decode(sys.argv.pop(1)))" {code} {cfg} %i
 """
 
 TIMER_TEMPLATE = """[Unit]
@@ -5110,6 +5210,11 @@ def systemd_units(cfg: Config, config_path: Path) -> Tuple[Dict[str, str], List[
         timers.append("server-backup-verify.timer")
     elif not cal:
         notes.append("schedules.verify is empty; no scheduled verify --deep")
+    units["server-backup-failure@.service"] = FAILURE_TEMPLATE.format(
+        code=base64.b64encode(FAILURE_HANDLER.encode()).decode(), cfg=config_path)
+    if not cfg.notify.email:
+        notes.append("notify.email is empty: a failed run that cannot report itself (e.g. script missing) "
+                     "is only visible in systemctl --failed")
     return units, timers, notes
 
 
@@ -5156,7 +5261,8 @@ commands
   run               legacy luks_backup.py LUKS backup (same output and --json)
   example-config    print a starting config
   systemd-units     write the service and the timers this machine needs (from profiles + schedules,
-                    incl. the bi-monthly verify --deep) and print the systemctl enable line
+                    incl. the bi-monthly verify --deep), plus an OnFailure unit that emails when a
+                    run fails without reporting itself (e.g. script missing); prints the enable line
 
 examples
   server_backup.py backup --proxmox --vmid 101

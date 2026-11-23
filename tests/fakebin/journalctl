@@ -1,0 +1,4 @@
+#!/bin/sh
+# Fake journalctl -u UNIT: a couple of journal lines
+echo "2026-11-23T01:30:00 pve systemd[1]: server-backup@daily.service: Failed to execute /usr/local/sbin/server_backup.py: No such file or directory"
+echo "2026-11-23T01:30:00 pve systemd[1]: server-backup@daily.service: Main process exited, code=exited, status=203/EXEC"

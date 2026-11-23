@@ -64,7 +64,7 @@ Do this once per machine before relying on the timers. Each step says what a pas
 | # | command | pass looks like |
 |---|---|---|
 | 0 | **OS-only backups:** mark each data disk `backup=0` in Proxmox and list it in `excluded_disks_ok` ([how](#os-only-vm-backups)). Check with `qm config <vmid> \| grep -E '^(scsi\|virtio\|sata)[0-9]'` | every data-disk line contains `backup=0` (Proxmox sorts the options, so it's often mid-line); the OS-disk line doesn't |
-| 1 | `server_backup.py status` | `server_backup 2.3.1` on the first line, destination `OK`, both VMs listed with only their OS disk size, notes `… excluded as planned`, no `X` lines |
+| 1 | `server_backup.py status` | `server_backup 2.4.0` on the first line, destination `OK`, both VMs listed with only their OS disk size, notes `… excluded as planned`, no `X` lines |
 | 2 | `server_backup.py notify-test` | the test email arrives |
 | 3 | `server_backup.py backup --proxmox-host` | `proxmox_host OK`; a `<ts>.tar.gpg` appears in `proxmox/host/` |
 | 4 | `server_backup.py gpg-test` (paste the key from Vaultwarden, or `--key-file`) | `passphrase OK` and `… files match SHA256SUMS` |
@@ -75,7 +75,8 @@ Do this once per machine before relying on the timers. Each step says what a pas
 | 9 | `qm stop 9102 && qm destroy 9102 --purge` | the test VM is gone |
 | 10 | repeat 5–6 for the other VMs (e.g. `--vmid 101`) | as above |
 | 11 | `server_backup.py systemd-units --output-dir /etc/systemd/system`, then the printed `systemctl enable --now …` | `systemctl list-timers 'server-backup*'` shows the next runs |
-| 12 | after the first scheduled run: `server_backup.py status` | the *Last run* line is `OK`/`WARNING`, and a report email arrived if the result was at least `notify.on` |
+| 12 | failure email: `chmod -x /usr/local/sbin/server_backup.py; systemctl start server-backup-verify.service; chmod +x /usr/local/sbin/server_backup.py` | the start fails at once (nothing runs), and an email `… server-backup-verify.service FAILED (exit-code)` arrives naming the missing or non-executable script. Needs `notify.email` |
+| 13 | after the first scheduled run: `server_backup.py status` | the *Last run* line is `OK`/`WARNING`, and a report email arrived if the result was at least `notify.on` |
 
 The original VM keeps running during steps 5–9. The test VM is a separate copy with its network
 links down. Never bring them up: inside, it's a clone with the same hostname and IP address.
@@ -125,7 +126,7 @@ links down. Never bring them up: inside, it's a clone with the same hostname and
 | `gpg-test [--key-file F] [--archive A]` | Restore drill for the backup key: decrypts and checks the newest encrypted archive with the key and passphrase from Vaultwarden |
 | `notify-test` | Sends a test email using the `notify` settings |
 | `ledger [--accept]` | Shows the tamper ledger. `--accept` re-baselines it after you deleted backups on purpose |
-| `systemd-units [--output-dir D]` | Writes the service, the timers this machine needs, and the scheduled deep verify; prints the enable command |
+| `systemd-units [--output-dir D]` | Writes the service, the timers this machine needs, the scheduled deep verify and the failure-email unit; prints the enable command |
 | `files-init`, `files-snapshots` | Creates the Restic repository and password file / lists snapshots |
 | `discover`, `configure`, `cifs-setup`, `cifs-test`, `gpg-setup`, `gpg-status` | Setup and checks |
 | `run` | Legacy `luks_backup.py` LUKS backup, with the same output and JSON |
@@ -230,6 +231,16 @@ is busy or the config is unreadable, also mails an error.
 On a Proxmox host, vzdump also sends its own notification per VM through Proxmox's notification
 system (`mail-to-root`). Configure that under Datacenter → Notifications, or ignore it; this
 report covers every module.
+
+**When the script can't report itself.** Every generated service has
+`OnFailure=server-backup-failure@%N.service`. That unit emails `notify.email` when a scheduled run
+fails in a way the script couldn't report: the script is missing, moved or not executable
+(`203/EXEC`), it was killed, it timed out, or it was interrupted. Exit codes 1 and 2 are left to
+the script's own report and `notify.on`, so you don't get two emails. The handler is standalone
+Python embedded in the unit, so it works without `server_backup.py`; it reads the notify settings
+from the config each time. It can't help when the config itself is gone, or with an error the
+script hits before reading the config; those show only in `systemctl --failed`. Units written by
+versions before 2.4.0 don't have it: rerun `systemd-units --output-dir /etc/systemd/system`.
 
 ### Disk usage
 
@@ -419,7 +430,8 @@ hand later. Without a command the tool now shows `status`; `run` keeps the old b
 
 Disable the timers **before** removing the script. If the script is gone, the timers keep firing
 on schedule and each run fails before `server_backup.py` starts, with `status=203/EXEC` in the
-journal. You get no email, because the email is sent by the script itself. The only signs are
+journal. From 2.4.0 the failure unit emails each of those failures (see
+[Email reports](#email-reports)); with older units or no `notify.email`, the only signs are
 `systemctl --failed` and the journal.
 
 ```bash
@@ -429,7 +441,7 @@ systemctl stop 'server-backup*.service'
 
 # 2. remove the units
 rm -f /etc/systemd/system/server-backup@.service /etc/systemd/system/server-backup-*.timer \
-      /etc/systemd/system/server-backup-verify.service
+      /etc/systemd/system/server-backup-verify.service /etc/systemd/system/server-backup-failure@.service
 systemctl daemon-reload && systemctl reset-failed
 
 # 3. keep what you need to read the existing backups (if you haven't already)
@@ -468,6 +480,10 @@ Restic data isn't read on any one run; nothing is decrypted (`gpg-test`) and no 
 
 The first line of `status` shows the installed version.
 
+- **2.4.0** Failure email from systemd: generated services get `OnFailure=`, and a standalone
+  handler emails `notify.email` when a run fails without the script reporting it (script missing
+  or not executable, killed, timed out, interrupted). Rerun `systemd-units` to get it.
+  README: Uninstall section.
 - **2.3.1** Docs only: `--help`, the README and the verify timer described `verify --deep` as reading
   every backup back. It reads the newest archive of each VM and a 5 % Restic sample;
   see [What verify checks](#what-verify-checks).
@@ -499,7 +515,7 @@ The first line of `status` shows the installed version.
 python3 -m unittest discover -s tests -v
 ```
 
-62 tests use fake `qm`, `vzdump`, `qmrestore`, `restic`, `pveversion`, `lsblk`, `lvs`,
+70 tests use fake `qm`, `vzdump`, `qmrestore`, `restic`, `pveversion`, `lsblk`, `lvs`, `systemctl`, `journalctl`,
 `sendmail` and `cryptsetup`, and a local directory in place of the CIFS mount. The backup-key
 tests use the real `gpg` when it's installed.
 

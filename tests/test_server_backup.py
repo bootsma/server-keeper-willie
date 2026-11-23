@@ -8,9 +8,12 @@ detection, metadata, retention, verification, restore tests and reporting.
 
     python3 -m unittest discover -s tests -v
 """
+import email
 import fcntl
 import io
 import json
+import shlex
+import subprocess
 import os
 import sqlite3
 import sys
@@ -1015,6 +1018,60 @@ class TestWillie(unittest.TestCase):
         with redirect_stdout(io.StringIO()) as out, self.assertRaises(SystemExit):
             sb.main(["--version"])
         self.assertIn(sb.__version__, out.getvalue())
+
+
+class TestFailureHandler(unittest.TestCase):
+    """The OnFailure= unit: standalone, run exactly as systemd would (argv from the ExecStart line)."""
+
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp())
+        self.cfg_path = self.tmp / "config.json"
+        self.cfg_path.write_text(json.dumps({"hostname": "pve", "notify": {
+            "email": ["ops@example.org"], "method": "sendmail"}}))
+        units, _, _ = sb.systemd_units(sb.Config(), self.cfg_path)
+        self.units = units
+        line = next(l for l in units["server-backup-failure@.service"].splitlines() if l.startswith("ExecStart="))
+        self.argv = shlex.split(line[len("ExecStart="):])
+
+    def run_handler(self, props, unit="server-backup@daily"):
+        argv = [a.replace("%i", unit) for a in self.argv]
+        env = dict(os.environ, PATH=f"{FAKEBIN}:{os.environ['PATH']}", FAKE_STATE=str(self.tmp),
+                   FAKE_UNIT_PROPS=props)
+        p = subprocess.run(argv, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                           universal_newlines=True, timeout=60)
+        mail = self.tmp / "sendmail-message"
+        if not mail.exists():
+            return p.returncode, p.stdout, ""
+        m = email.message_from_string(mail.read_text())
+        return p.returncode, p.stdout, f"Subject: {m['Subject']}\n" + m.get_payload(decode=True).decode()
+
+    def test_units_wire_onfailure_and_handler_reads_this_config(self):
+        for name in ("server-backup@.service",):
+            self.assertIn("OnFailure=server-backup-failure@%N.service", self.units[name].split("[Service]")[0])
+        self.assertEqual(self.argv[-2:], [str(self.cfg_path), "%i"])
+
+    def test_script_missing_is_emailed(self):
+        rc, out, mail = self.run_handler("Result=exit-code ExecMainCode=1 ExecMainStatus=203")
+        self.assertEqual(rc, 0, out)
+        self.assertIn("Subject: [server_backup] pve: server-backup@daily.service FAILED (exit-code)", mail)
+        self.assertIn("missing, moved or not executable", mail)
+        self.assertIn("status=203/EXEC", mail)
+
+    def test_killed_is_emailed(self):
+        rc, out, mail = self.run_handler("Result=signal ExecMainCode=2 ExecMainStatus=9")
+        self.assertIn("killed by signal 9", mail)
+
+    def test_normal_failures_are_left_to_the_script(self):
+        for st in ("1", "2"):
+            rc, out, mail = self.run_handler(f"Result=exit-code ExecMainCode=1 ExecMainStatus={st}")
+            self.assertEqual((rc, mail), (0, ""), out)
+            self.assertIn("reported it itself", out)
+
+    def test_no_recipients_no_email(self):
+        self.cfg_path.write_text(json.dumps({"notify": {"email": []}}))
+        rc, out, mail = self.run_handler("Result=exit-code ExecMainCode=1 ExecMainStatus=203")
+        self.assertEqual((rc, mail), (0, ""))
+        self.assertIn("notify.email is empty", out)
 
 
 class TestCli(unittest.TestCase):

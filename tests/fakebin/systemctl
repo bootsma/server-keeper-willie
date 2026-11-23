@@ -1,0 +1,3 @@
+#!/bin/sh
+# Fake `systemctl show UNIT -p ...`: the failed unit's properties come from $FAKE_UNIT_PROPS
+printf '%s\n' $FAKE_UNIT_PROPS
