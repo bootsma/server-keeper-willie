@@ -36,7 +36,7 @@ Commands
     status           capabilities, modules, destination health, VMs, warnings (performs no backup)
     backup           --profile NAME | --luks --files --proxmox --proxmox-vm --proxmox-host
                      (no selector = every enabled module)
-    verify           same selection; --deep = full checksums, restic data read, zstd -t
+    verify           same selection; --deep = read the newest VM archives back, restic data sample
     restore-test     --files [--path P]  |  --proxmox-vm --vmid V --test-vmid N --storage S [--yes]
     ledger           show the tamper ledger; --accept re-baselines after intended deletions
     files-init       create the Restic repository (and its password file)
@@ -92,7 +92,7 @@ from email.utils import formatdate, make_msgid
 from pathlib import Path
 from typing import Callable, Dict, Iterator, List, Optional, Tuple
 
-__version__ = "2.3.0"
+__version__ = "2.3.1"
 
 DEFAULT_CONFIG = Path("/etc/server-backup/config.json")
 LEGACY_CONFIG = Path("/etc/luks-backup/config.json")
@@ -5105,7 +5105,7 @@ def systemd_units(cfg: Config, config_path: Path) -> Tuple[Dict[str, str], List[
         units["server-backup-verify.service"] = SERVICE_TEMPLATE.format(
             what="verify --deep", exe=exe, cfg=cfg_arg, args="verify --deep", wait="6h")
         units["server-backup-verify.timer"] = TIMER_TEMPLATE.format(
-            what="verify --deep (reads every backup back)", calendar=cal, delay="30min",
+            what="verify --deep (reads the newest VM archives back)", calendar=cal, delay="30min",
             unit="server-backup-verify.service")
         timers.append("server-backup-verify.timer")
     elif not cal:
@@ -5139,8 +5139,8 @@ HELP_EPILOG = """\
 commands
   status            report only, no backup (--quick: skip share mount and repository checks)
   backup            run --profile NAME, or module flags, or every enabled module
-  verify            check stored backups and tamper ledger (--deep: full checksums, restic data
-                    read, zstd -t)
+  verify            check the newest backups and the tamper ledger (--deep: also read the newest
+                    archive of each VM back - sha256 + zstd -t - and a 5% restic data sample)
   restore-test      --files [--path P]: restore into a temp dir and compare with the live file
                     --proxmox-vm --vmid V --test-vmid N --storage S: restore as a NEW stopped VM,
                     links down
@@ -5202,7 +5202,7 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--vmid", type=int, action="append", default=[], metavar="ID",
                    help="only these configured VM IDs (repeatable)")
     o = ap.add_argument_group("command options")
-    o.add_argument("--deep", action="store_true", help="verify: read everything back (slow)")
+    o.add_argument("--deep", action="store_true", help="verify: read the newest VM archives back + 5%% restic data (slow)")
     o.add_argument("--quick", action="store_true", help="status: no share mount, no repository checks")
     o.add_argument("--accept", action="store_true", help="ledger: re-baseline to what exists now")
     o.add_argument("--wait-lock", type=parse_duration, default=0, metavar="DURATION",

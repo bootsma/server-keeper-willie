@@ -64,12 +64,12 @@ Do this once per machine before relying on the timers. Each step says what a pas
 | # | command | pass looks like |
 |---|---|---|
 | 0 | **OS-only backups:** mark each data disk `backup=0` in Proxmox and list it in `excluded_disks_ok` ([how](#os-only-vm-backups)). Check with `qm config <vmid> \| grep -E '^(scsi\|virtio\|sata)[0-9]'` | every data-disk line contains `backup=0` (Proxmox sorts the options, so it's often mid-line); the OS-disk line doesn't |
-| 1 | `server_backup.py status` | `server_backup 2.3.0` on the first line, destination `OK`, both VMs listed with only their OS disk size, notes `… excluded as planned`, no `X` lines |
+| 1 | `server_backup.py status` | `server_backup 2.3.1` on the first line, destination `OK`, both VMs listed with only their OS disk size, notes `… excluded as planned`, no `X` lines |
 | 2 | `server_backup.py notify-test` | the test email arrives |
 | 3 | `server_backup.py backup --proxmox-host` | `proxmox_host OK`; a `<ts>.tar.gpg` appears in `proxmox/host/` |
 | 4 | `server_backup.py gpg-test` (paste the key from Vaultwarden, or `--key-file`) | `passphrase OK` and `… files match SHA256SUMS` |
 | 5 | `server_backup.py backup --proxmox-vm --vmid 102` | `1/1 VM(s) backed up`. Progress lines every 30 s: `VM 102: vzdump 45% (…)`, then `computing sha256 …` while the archive is read back |
-| 6 | `server_backup.py verify --proxmox-vm --vmid 102 --deep` | no errors (reads the archive back) |
+| 6 | `server_backup.py verify --proxmox-vm --vmid 102 --deep` | no errors (reads the newest archive back) |
 | 7 | `server_backup.py restore-test --proxmox-vm --vmid 102 --test-vmid 9102 --storage vm_data2` | `qmrestore 9102 NN% (…)` progress, then `VM 102 restored … as test VM 9102`, with passthrough, hugepages and pinning listed as removed |
 | 8 | `qm set 9102 --memory 8192 --cores 2` then `qm start 9102` | the console (Proxmox GUI) boots to a login. GPU and network messages are expected (no GPU, links down). With OS-only backups, a stop in **emergency mode** after `Job dev-mapper-…` timeouts also passes: the root filesystem loaded, and only the excluded data disks from `/etc/fstab` are missing (see [OS-only VM backups](#os-only-vm-backups)) |
 | 9 | `qm stop 9102 && qm destroy 9102 --purge` | the test VM is gone |
@@ -120,7 +120,7 @@ links down. Never bring them up: inside, it's a clone with the same hostname and
 |---|---|
 | `status [--quick]` | Reports what's detected and enabled, share health, VMs, latest backups, disk usage, email settings, tamper findings and warnings. Never backs anything up. |
 | `backup` | Runs `--profile NAME`, the modules you name (`--luks --files --proxmox --proxmox-vm --proxmox-host`, `--vmid N`), or every enabled module. Sends the email report unless `--no-notify` is given. |
-| `verify [--deep]` | Checks stored backups and the tamper ledger. `--deep` reads everything back: sha256, a `restic check` data sample, `zstd -t`. |
+| `verify [--deep]` | Checks the newest backups and the tamper ledger. `--deep` also reads the newest archive of each VM back (sha256, `zstd -t`) and a 5 % `restic check` data sample. See [What verify checks](#what-verify-checks). |
 | `restore-test` | `--files [--path P]`, or `--proxmox-vm --vmid V --test-vmid N --storage S [--yes]` |
 | `gpg-test [--key-file F] [--archive A]` | Restore drill for the backup key: decrypts and checks the newest encrypted archive with the key and passphrase from Vaultwarden |
 | `notify-test` | Sends a test email using the `notify` settings |
@@ -186,8 +186,9 @@ them. `schedules` says when each profile runs (systemd `OnCalendar` syntax). The
   `profiles` and `"monthly": "Sun *-*-01..07 01:30"` (first Sunday of the month) to `schedules`.
   Rerun `systemd-units`; it lists timers that are no longer needed, with the command to remove
   them.
-- **The deep verify** runs on the third Wednesday of every second month at 03:00 and reads every
-  latest backup back. Set `"verify": ""` to turn it off.
+- **The deep verify** runs on the third Wednesday of every second month at 03:00 and reads the
+  newest archive of each VM back (see [What verify checks](#what-verify-checks)). Set
+  `"verify": ""` to turn it off.
 - Check an expression with `systemd-analyze calendar "<expr>"`. Avoid overlapping runs: a timer
   waits at most 4 h (verify: 6 h) for a running backup.
 
@@ -414,10 +415,26 @@ Without `-c`, and with no `/etc/server-backup/config.json`, the tool imports
 `/etc/luks-backup/config.json`. LUKS backups move to `<host>/luks/`; delete old-layout backups by
 hand later. Without a command the tool now shows `status`; `run` keeps the old behaviour.
 
+### What verify checks
+
+| | `verify` | `--deep` adds |
+|---|---|---|
+| all modules | tamper ledger: every recorded backup still there with the same recorded checksum and size (not re-read); disk usage | — |
+| `luks`, `proxmox_host` | newest backup: sha256 against its sidecar / `SHA256SUMS`, tars readable; age (share and local copy) | nothing more |
+| `proxmox_vm` | newest backup of each VM: metadata present, size matches; age | newest archive read in full: sha256 against the value recorded at backup time, `zstd -t` |
+| `files` | `restic check` (repository structure); age of the newest snapshot | `--read-data-subset=5%` (or `check_read_data_subset`) |
+
+Not covered by either: older VM archives are never read back (only the ledger watches them); most
+Restic data isn't read on any one run; nothing is decrypted (`gpg-test`) and no VM boots
+(`restore-test`).
+
 ### Changelog
 
 The first line of `status` shows the installed version.
 
+- **2.3.1** Docs only: `--help`, the README and the verify timer described `verify --deep` as reading
+  every backup back. It reads the newest archive of each VM and a 5 % Restic sample;
+  see [What verify checks](#what-verify-checks).
 - **2.3.0** A groundskeeper sign-off line after a clean `backup`, `verify`, `restore-test`,
   `gpg-test` or `status` in a terminal. Never in errors, warnings, logs, JSON or email;
   `"personality": false` turns it off. `--version` / `-V`.
